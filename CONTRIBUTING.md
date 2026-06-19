@@ -76,4 +76,4 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The CI workflow builds, verifies, and publishes to npm. An `NPM_TOKEN` secret must be set in the GitHub repository settings.
+The CI workflow builds, verifies, and publishes to npm using [npm OIDC trusted publishing](https://docs.npmjs.com/guides/publishing-packages-with-github-actions#publishing-to-npm-with-github-actions-using-oidc). No `NPM_TOKEN` secret is needed. You must configure the npm package for trusted publishing by linking the GitHub repository in your npm package settings (see npm's [trusted publishing guide](https://docs.npmjs.com/guides/publishing-packages-with-github-actions#connecting-the-repository-to-npm)).

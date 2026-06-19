@@ -19,4 +19,3 @@ jobs:
       - run: bun publish --access public
         env:
           NPM_CONFIG_PROVENANCE: true
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
