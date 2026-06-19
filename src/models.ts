@@ -1,6 +1,5 @@
 import { readOpenCodeApiKey } from "./auth";
 import {
-  KILO_CODE_BASE_URL,
   KILO_CODE_DISCOVERY_BASE,
   KILO_CODE_ORGANIZATION_HEADER,
   KILO_CODE_PROVIDER_ID,
@@ -38,7 +37,6 @@ type DiscoveryOptions = {
   providerID?: string;
   providerNpm?: string;
   fetch?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-  authFile?: string;
 };
 
 function parsePrice(price: string | null | undefined): number {
@@ -64,6 +62,28 @@ function parseModalities(raw: string[] | undefined): Modality[] {
   return valid.length === 0 ? ["text"] : valid.includes("text") ? valid : ["text", ...valid];
 }
 
+function outputLimit(item: OpenRouterModel, context: number): number {
+  return item.top_provider?.max_completion_tokens ?? item.max_completion_tokens ?? (Math.ceil(context * 0.2) || DEFAULT_OUTPUT);
+}
+
+function modelCost(item: OpenRouterModel): KiloModel["cost"] {
+  return {
+    input: parsePrice(item.pricing?.prompt),
+    output: parsePrice(item.pricing?.completion),
+    cache_read: parsePrice(item.pricing?.input_cache_read),
+    cache_write: parsePrice(item.pricing?.input_cache_write),
+  };
+}
+
+function modelCapabilities(params: string[], inputModalities: Modality[]) {
+  return {
+    tool_call: params.includes("tools"),
+    reasoning: params.includes("reasoning"),
+    temperature: params.includes("temperature"),
+    attachment: inputModalities.includes("image"),
+  };
+}
+
 export type KiloModel = {
   id: string;
   name: string;
@@ -85,25 +105,17 @@ export type KiloModel = {
 export function toKiloModel(item: OpenRouterModel, npm: string): KiloModel {
   const id = item.id;
   const ctx = item.context_length ?? DEFAULT_CONTEXT;
-  const output = item.top_provider?.max_completion_tokens ?? item.max_completion_tokens ?? (Math.ceil(ctx * 0.2) || DEFAULT_OUTPUT);
   const params = item.supported_parameters ?? [];
   const inputMods = parseModalities(item.architecture?.input_modalities);
+  const capabilities = modelCapabilities(params, inputMods);
 
   return {
     id,
     name: item.name ?? id,
     family: item.opencode?.family ?? extractFamily(id),
-    cost: {
-      input: parsePrice(item.pricing?.prompt),
-      output: parsePrice(item.pricing?.completion),
-      cache_read: parsePrice(item.pricing?.input_cache_read),
-      cache_write: parsePrice(item.pricing?.input_cache_write),
-    },
-    limit: { context: ctx, output },
-    tool_call: params.includes("tools"),
-    reasoning: params.includes("reasoning"),
-    temperature: params.includes("temperature"),
-    attachment: inputMods.includes("image"),
+    cost: modelCost(item),
+    limit: { context: ctx, output: outputLimit(item, ctx) },
+    ...capabilities,
     input_modalities: inputMods,
     output_modalities: parseModalities(item.architecture?.output_modalities),
     status: "active",
@@ -119,24 +131,30 @@ function discoveryURL(organizationId: string | undefined): string {
     : `${KILO_CODE_DISCOVERY_BASE}/api/openrouter`;
 }
 
-export async function discoverKiloCodeModels(options: DiscoveryOptions = {}): Promise<Record<string, KiloModel>> {
-  const providerID = options.providerID ?? KILO_CODE_PROVIDER_ID;
-  const npm = options.providerNpm ?? new URL("./provider.js", import.meta.url).href;
-  const apiKey = options.apiKey ?? readOpenCodeApiKey(providerID);
-
+function discoveryHeaders(options: DiscoveryOptions, apiKey: string | undefined): Record<string, string> {
   const headers: Record<string, string> = {};
   if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
   if (options.organizationId) headers[KILO_CODE_ORGANIZATION_HEADER] = options.organizationId;
+  return headers;
+}
 
-  const url = `${discoveryURL(options.organizationId).replace(/\/$/, "")}/models`;
-  const response = await (options.fetch ?? fetch)(url, { headers });
-  if (!response.ok) return {};
-
-  const body = (await response.json()) as { data?: OpenRouterModel[] };
+function modelsFromResponse(items: OpenRouterModel[] | undefined, npm: string): Record<string, KiloModel> {
   const models: Record<string, KiloModel> = {};
-  for (const item of body.data ?? []) {
+  for (const item of items ?? []) {
     if (typeof item.id !== "string" || item.id.length === 0) continue;
     models[item.id] = toKiloModel(item, npm);
   }
   return models;
+}
+
+export async function discoverKiloCodeModels(options: DiscoveryOptions = {}): Promise<Record<string, KiloModel>> {
+  const npm = options.providerNpm ?? new URL("./provider.js", import.meta.url).href;
+  const apiKey = options.apiKey ?? readOpenCodeApiKey(options.providerID ?? KILO_CODE_PROVIDER_ID);
+
+  const url = `${discoveryURL(options.organizationId).replace(/\/$/, "")}/models`;
+  const response = await (options.fetch ?? fetch)(url, { headers: discoveryHeaders(options, apiKey) });
+  if (!response.ok) return {};
+
+  const body = (await response.json()) as { data?: OpenRouterModel[] };
+  return modelsFromResponse(body.data, npm);
 }
