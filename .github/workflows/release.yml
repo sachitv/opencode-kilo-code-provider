@@ -88,6 +88,7 @@ jobs:
         uses: actions/setup-node@v6
         with:
           node-version: '22'
+          registry-url: https://registry.npmjs.org/
 
       # Uses npm OIDC trusted publishing — no NPM_TOKEN secret needed.
       # Requires linking this repo to the npm package in npm settings.
