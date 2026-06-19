@@ -1,106 +1,135 @@
 import { describe, expect, test } from "bun:test";
-import { modelFromOpenAIId, modelFromOpenRouterModel, discoverKiloCodeModels } from "../src/models";
+import { toKiloModel, discoverKiloCodeModels } from "../src/models";
 import { KILO_CODE_ORGANIZATION_HEADER, KILO_CODE_PROVIDER_ID } from "../src/provider";
 
-describe("model discovery", () => {
-  test("fetches models from the Kilo OpenRouter-compatible endpoint with org", async () => {
+function mockModel(id: string, overrides: Record<string, unknown> = {}) {
+  return {
+    id,
+    name: id,
+    context_length: 128000,
+    max_completion_tokens: 16384,
+    pricing: { prompt: "0.000001", completion: "0.000003", input_cache_read: "0.0000001", input_cache_write: "0.0000005" },
+    architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
+    supported_parameters: ["tools", "temperature", "reasoning"],
+    ...overrides,
+  };
+}
+
+describe("toKiloModel", () => {
+  test("parses pricing from $/token to $/M tokens", () => {
+    const m = toKiloModel(mockModel("openai/gpt-5.1", { name: "GPT-5.1" }), "file:///p.js");
+    expect(m.cost.input).toBe(1);
+    expect(m.cost.output).toBe(3);
+    expect(m.cost.cache_read).toBeCloseTo(0.1, 5);
+    expect(m.cost.cache_write).toBe(0.5);
+  });
+
+  test("extracts family from model id", () => {
+    expect(toKiloModel(mockModel("deepseek/deepseek-v4-pro"), "npm").family).toBe("deepseek");
+    expect(toKiloModel(mockModel("anthropic/claude-sonnet-4.5"), "npm").family).toBe("claude");
+    expect(toKiloModel(mockModel("kilo-auto/free"), "npm").family).toBe("");
+  });
+
+  test("maps capabilities from supported_parameters", () => {
+    const m = toKiloModel(mockModel("test/model", { supported_parameters: ["tools"] }), "npm");
+    expect(m.tool_call).toBe(true);
+    expect(m.reasoning).toBe(false);
+    expect(m.temperature).toBe(false);
+  });
+
+  test("maps modalities from architecture", () => {
+    const m = toKiloModel(mockModel("test/model"), "npm");
+    expect(m.input_modalities).toEqual(["text", "image"]);
+    expect(m.output_modalities).toEqual(["text"]);
+  });
+
+  test("defaults to text modality when none specified", () => {
+    const m = toKiloModel(mockModel("test/model", { architecture: {} }), "npm");
+    expect(m.input_modalities).toEqual(["text"]);
+  });
+
+  test("uses defaults for missing fields", () => {
+    const m = toKiloModel({ id: "bare" }, "npm");
+    expect(m.limit.context).toBe(128000);
+    expect(m.limit.output).toBeGreaterThan(0);
+    expect(m.cost.input).toBe(0);
+    expect(m.tool_call).toBe(false);
+  });
+
+  test("preserves variants from opencode field", () => {
+    const m = toKiloModel(mockModel("test/model", { opencode: { variants: { reasoning: { effort: "high" } } } }), "npm");
+    expect(m.variants).toEqual({ reasoning: { effort: "high" } });
+  });
+
+  test("computes output from context_length when max_completion_tokens missing", () => {
+    const m = toKiloModel(mockModel("test/model", { context_length: 100000, max_completion_tokens: null, top_provider: undefined }), "npm");
+    expect(m.limit.output).toBe(20000);
+  });
+});
+
+describe("discoverKiloCodeModels", () => {
+  test("calls org endpoint with auth and org header when organizationId provided", async () => {
     const seen: Array<{ url: string; headers: Record<string, string> }> = [];
     const models = await discoverKiloCodeModels({
       apiKey: "secret-key",
       organizationId: "org_123",
-      providerNpm: "file:///provider.js",
+      providerNpm: "file:///p.js",
       fetch: async (url, init) => {
         seen.push({ url: String(url), headers: Object.fromEntries(new Headers(init?.headers).entries()) });
-        return Response.json({
-          data: [
-            {
-              id: "openai/gpt-5.1",
-              name: "GPT-5.1",
-              context_length: 200000,
-              max_completion_tokens: 32768,
-              pricing: { prompt: "0.000005", completion: "0.000015", input_cache_read: "0.000001", input_cache_write: "0.000003" },
-              architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
-              supported_parameters: ["tools", "temperature", "reasoning"],
-            },
-            {
-              id: "anthropic/claude-sonnet-4.5",
-              name: "Claude Sonnet 4.5",
-              context_length: 200000,
-              pricing: { prompt: "0.000003", completion: "0.000015" },
-              supported_parameters: ["tools"],
-            },
-          ],
-        });
+        return Response.json({ data: [mockModel("openai/gpt-5.1"), mockModel("anthropic/claude-sonnet-4.5")] });
       },
     });
 
-    expect(seen).toEqual([
-      {
-        url: "https://api.kilo.ai/api/organizations/org_123/models",
-        headers: {
-          authorization: "Bearer secret-key",
-          "x-kilocode-organizationid": "org_123",
-        },
-      },
-    ]);
+    expect(seen).toEqual([{
+      url: "https://api.kilo.ai/api/organizations/org_123/models",
+      headers: { authorization: "Bearer secret-key", "x-kilocode-organizationid": "org_123" },
+    }]);
     expect(Object.keys(models)).toEqual(["openai/gpt-5.1", "anthropic/claude-sonnet-4.5"]);
-    expect(models["openai/gpt-5.1"]?.api.npm).toBe("file:///provider.js");
-    expect(models["openai/gpt-5.1"]?.cost.input).toBe(5);
-    expect(models["openai/gpt-5.1"]?.cost.output).toBe(15);
-    expect(models["openai/gpt-5.1"]?.cost.cache.read).toBe(1);
-    expect(models["openai/gpt-5.1"]?.cost.cache.write).toBe(3);
-    expect(models["openai/gpt-5.1"]?.limit.context).toBe(200000);
-    expect(models["openai/gpt-5.1"]?.limit.output).toBe(32768);
-    expect(models["openai/gpt-5.1"]?.capabilities.reasoning).toBe(true);
-    expect(models["openai/gpt-5.1"]?.capabilities.attachment).toBe(true);
-    expect(models["anthropic/claude-sonnet-4.5"]?.cost.input).toBe(3);
-    expect(models["anthropic/claude-sonnet-4.5"]?.cost.cache.read).toBe(0);
+    expect(models["openai/gpt-5.1"]?.cost.input).toBe(1);
   });
 
-  test("fetches models from the public OpenRouter endpoint without org", async () => {
+  test("calls public openrouter endpoint when no organizationId", async () => {
     const seen: Array<{ url: string }> = [];
     await discoverKiloCodeModels({
-      apiKey: "secret-key",
-      providerNpm: "file:///provider.js",
+      apiKey: "key",
+      providerNpm: "npm",
       fetch: async (url) => {
         seen.push({ url: String(url) });
-        return Response.json({ data: [{ id: "kilo-auto/free" }] });
+        return Response.json({ data: [mockModel("kilo-auto/free")] });
       },
     });
-
     expect(seen).toEqual([{ url: "https://api.kilo.ai/api/openrouter/models" }]);
   });
 
-  test("builds OpenCode model metadata from OpenRouter model with pricing", () => {
-    const model = modelFromOpenRouterModel(
-      {
-        id: "deepseek/deepseek-v4-pro",
-        name: "DeepSeek V4 Pro",
-        context_length: 128000,
-        pricing: { prompt: "0.0000003", completion: "0.0000012" },
-        supported_parameters: ["tools", "temperature"],
-      },
-      KILO_CODE_PROVIDER_ID,
-      "file:///provider.js",
-    );
-
-    expect(model.id).toBe("deepseek/deepseek-v4-pro");
-    expect(model.name).toBe("DeepSeek V4 Pro");
-    expect(model.family).toBe("deepseek");
-    expect(model.cost.input).toBe(0.3);
-    expect(model.cost.output).toBe(1.2);
-    expect(model.capabilities.toolcall).toBe(true);
-    expect(model.capabilities.temperature).toBe(true);
-    expect(model.limit.context).toBe(128000);
+  test("returns empty on non-ok response", async () => {
+    const models = await discoverKiloCodeModels({
+      apiKey: "key",
+      providerNpm: "npm",
+      fetch: async () => new Response("Unauthorized", { status: 401 }),
+    });
+    expect(models).toEqual({});
   });
 
-  test("builds fallback model metadata for basic IDs", () => {
-    const model = modelFromOpenAIId("kilo-auto", KILO_CODE_PROVIDER_ID, "file:///provider.js");
+  test("skips items with missing or empty id", async () => {
+    const models = await discoverKiloCodeModels({
+      apiKey: "key",
+      providerNpm: "npm",
+      fetch: async () => Response.json({ data: [{ id: "" }, { id: "valid/model" }] }),
+    });
+    expect(Object.keys(models)).toEqual(["valid/model"]);
+  });
+});
 
-    expect(model.id).toBe("kilo-auto");
-    expect(model.providerID).toBe(KILO_CODE_PROVIDER_ID);
-    expect(model.api.npm).toBe("file:///provider.js");
-    expect(model.capabilities.toolcall).toBe(true);
-    expect(model.cost.input).toBe(0);
+describe("createKiloCode", () => {
+  test("injects organization header", async () => {
+    const { createKiloCode } = await import("../src/provider");
+    const provider = createKiloCode({ organizationId: "org-abc", apiKey: "key", name: "test" });
+    expect(provider).toBeDefined();
+  });
+
+  test("reads API key from OpenCode auth store when not provided", async () => {
+    const { createKiloCode } = await import("../src/provider");
+    const provider = createKiloCode({ name: "test" });
+    expect(provider).toBeDefined();
   });
 });

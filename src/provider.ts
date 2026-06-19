@@ -1,24 +1,23 @@
 import { createOpenAICompatible, type OpenAICompatibleProviderSettings } from "@ai-sdk/openai-compatible";
-import { readOpenCodeApiKeySync } from "./auth";
+import { readOpenCodeApiKey } from "./auth";
 
 export const KILO_CODE_PROVIDER_ID = "kilo-code";
 export const KILO_CODE_BASE_URL = "https://api.kilo.ai/api/gateway";
+export const KILO_CODE_DISCOVERY_BASE = "https://api.kilo.ai";
 export const KILO_CODE_ORGANIZATION_HEADER = "X-KiloCode-OrganizationId";
 
 type KiloCodeProviderSettings = Omit<OpenAICompatibleProviderSettings, "baseURL" | "name"> & {
   baseURL?: string;
   name?: string;
   organizationId?: string;
-  kilocodeOrganizationId?: string;
 };
 
 export function createKiloCode(options: KiloCodeProviderSettings = {}) {
-  const { organizationId, kilocodeOrganizationId, ...providerOptions } = options;
-  const kiloOrganizationId = organizationId ?? kilocodeOrganizationId;
-  const apiKey = providerOptions.apiKey ?? readOpenCodeApiKeySync(KILO_CODE_PROVIDER_ID);
+  const { organizationId, ...providerOptions } = options;
+  const apiKey = providerOptions.apiKey ?? readOpenCodeApiKey(KILO_CODE_PROVIDER_ID);
   const headers = {
     ...providerOptions.headers,
-    ...(kiloOrganizationId ? { [KILO_CODE_ORGANIZATION_HEADER]: kiloOrganizationId } : {}),
+    ...(organizationId ? { [KILO_CODE_ORGANIZATION_HEADER]: organizationId } : {}),
   };
 
   return createOpenAICompatible({
