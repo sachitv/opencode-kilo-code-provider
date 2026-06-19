@@ -1,5 +1,5 @@
 import type { Config, Plugin } from "@opencode-ai/plugin";
-import { discoverKiloCodeModels } from "./models";
+import { discoverKiloCodeModels, type Model } from "./models";
 import {
   KILO_CODE_BASE_URL,
   KILO_CODE_ORGANIZATION_HEADER,
@@ -32,6 +32,47 @@ function getOrganizationId(options: KiloCodePluginOptions, config: Config, provi
   );
 }
 
+function modalityArray(modalities: { text: boolean; audio: boolean; image: boolean; video: boolean; pdf: boolean }): Array<"text" | "audio" | "image" | "video" | "pdf"> {
+  const result: Array<"text" | "audio" | "image" | "video" | "pdf"> = [];
+  if (modalities.text) result.push("text");
+  if (modalities.audio) result.push("audio");
+  if (modalities.image) result.push("image");
+  if (modalities.video) result.push("video");
+  if (modalities.pdf) result.push("pdf");
+  return result;
+}
+
+const DEFAULT_OUTPUT = 16384;
+
+function modelToConfigEntry(model: Model, npm: string) {
+  return {
+    id: model.id,
+    name: model.name,
+    ...(model.family ? { family: model.family } : {}),
+    release_date: model.release_date,
+    attachment: model.capabilities.attachment,
+    reasoning: model.capabilities.reasoning,
+    temperature: model.capabilities.temperature,
+    tool_call: model.capabilities.toolcall,
+    cost: {
+      input: model.cost.input,
+      output: model.cost.output,
+      ...(model.cost.cache.read ? { cache_read: model.cost.cache.read } : {}),
+      ...(model.cost.cache.write ? { cache_write: model.cost.cache.write } : {}),
+    },
+    limit: {
+      context: model.limit.context,
+      output: model.limit.output ?? DEFAULT_OUTPUT,
+    },
+    modalities: {
+      input: modalityArray(model.capabilities.input),
+      output: modalityArray(model.capabilities.output),
+    },
+    status: model.status,
+    provider: { npm },
+  };
+}
+
 export const KiloCodeOpenCodeProvider: Plugin = async (_ctx, rawOptions = {}) => {
   const options = rawOptions as KiloCodePluginOptions;
   const providerID = options.providerID ?? KILO_CODE_PROVIDER_ID;
@@ -62,7 +103,6 @@ export const KiloCodeOpenCodeProvider: Plugin = async (_ctx, rawOptions = {}) =>
         ...(organizationId ? { organizationId } : {}),
         providerID,
         providerNpm: npm,
-        baseURL,
       });
 
       const headers = organizationId ? { [KILO_CODE_ORGANIZATION_HEADER]: organizationId } : undefined;
@@ -77,14 +117,7 @@ export const KiloCodeOpenCodeProvider: Plugin = async (_ctx, rawOptions = {}) =>
           ...(headers ? { headers } : {}),
         },
         models: Object.fromEntries(
-          Object.keys(models).map((id) => [
-            id,
-            {
-              id,
-              name: id,
-              provider: { npm },
-            },
-          ]),
+          Object.entries(models).map(([id, model]) => [id, modelToConfigEntry(model, npm)]),
         ),
       };
 
