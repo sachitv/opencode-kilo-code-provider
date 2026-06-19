@@ -10,6 +10,8 @@ The API key stays in OpenCode's credential store. The organization id is non-sec
 X-KiloCode-OrganizationId: your_org_id
 ```
 
+The organization id is a UUID (e.g. `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) found in your Kilo dashboard URL.
+
 ## Install
 
 ### From npm
