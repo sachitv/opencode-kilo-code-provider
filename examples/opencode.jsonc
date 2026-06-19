@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    [
+      "@sachitv/opencode-kilo-code-provider",
+      {
+        "organizationId": "your_org_id",
+        "defaultModel": "kilo-auto/free"
+      }
+    ]
+  ]
+}
