@@ -22,7 +22,7 @@
     "check": "bun run typecheck && bun test && bun run build"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^2.0.51"
+    "@ai-sdk/openai-compatible": "^3.0.0"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.17.8",
