@@ -1,7 +1,7 @@
 FROM debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 ARG BUN_VERSION=1.4.2
-ARG OPENCODE_V1_VERSION=1.18.30
+ARG OPENCODE_V1_VERSION=1.18.31
 ARG TARGETARCH
 
 RUN rm -f /etc/apt/sources.list.d/debian.sources \
@@ -40,8 +40,8 @@ RUN bun install --frozen-lockfile \
   && bun pm trust @opencode/cli
 
 RUN case "$TARGETARCH" in \
-    amd64) opencode_arch=x64; opencode_sha256=55007246858165496ff85ba1c2b648f7421e8e2013bf4189a680c9ff8e699d17 ;; \
-    arm64) opencode_arch=arm64; opencode_sha256=4111a55c2a02c0fac314bd51e9a2330280e6d29d2b85b9554fff6d62612566ed ;; \
+    amd64) opencode_arch=x64; opencode_sha256=e9312be75ed803b7415fc2aeabda1f4fe938912a39673762dc0c38c0e11ebde4 ;; \
+    arm64) opencode_arch=arm64; opencode_sha256=d4e332f46b227448582c0d9fc75f6f826dfe95c9f751bc2011fc4d937a042be6 ;; \
     *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
   esac \
   && curl --fail --silent --show-error --location \

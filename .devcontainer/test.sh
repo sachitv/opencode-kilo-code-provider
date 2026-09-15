@@ -89,5 +89,5 @@ test_version() {
   fi
 }
 
-test_version "1.18.30" "/workspace/.devcontainer/opencode-v1.jsonc"
+test_version "1.18.31" "/workspace/.devcontainer/opencode-v1.jsonc"
 test_version "2.0.3" "/workspace/.devcontainer/opencode-v2.jsonc"
