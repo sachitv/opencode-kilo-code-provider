@@ -32,7 +32,6 @@ jobs:
       - uses: actions/checkout@v7
       - name: Build Dev Container
         run: docker build --tag kilo-code-opencode-provider-devcontainer .devcontainer
+      # TODO: Pass a KILO_CODE_API_KEY secret here to run live completions once Kilo supports scoped API keys.
       - name: Verify baked OpenCode CLIs
-        run: docker run --rm --volume "$PWD:/workspace" --workdir /workspace --env KILO_CODE_API_KEY kilo-code-opencode-provider-devcontainer /workspace/.devcontainer/test.sh
-        env:
-          KILO_CODE_API_KEY: ${{ secrets.KILO_CODE_API_KEY }}
+        run: docker run --rm --volume "$PWD:/workspace" --workdir /workspace kilo-code-opencode-provider-devcontainer /workspace/.devcontainer/test.sh
