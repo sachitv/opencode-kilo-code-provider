@@ -29,20 +29,19 @@ Build the package and reference it directly in your OpenCode config:
 bun run build
 ```
 
-In `~/.config/opencode/opencode.json`:
+In `~/.config/opencode/opencode.json`, OpenCode 2 uses:
 
 ```jsonc
 {
   "plugin": [
-    [
-      "file:///absolute/path/to/opencode-kilo-code-provider/dist/index.js",
-      {
-        "organizationId": "your_org_id"
-      }
-    ]
+    ["file:///absolute/path/to/opencode-kilo-code-provider/dist", {
+      "organizationId": "your_org_id"
+    }]
   ]
 }
 ```
+
+For OpenCode 1 local development, use `file:///absolute/path/to/opencode-kilo-code-provider/dist/index.js` instead.
 
 Restart OpenCode after changing the config.
 
@@ -59,6 +58,8 @@ bun add @sachitv/opencode-kilo-code-provider
   ]
 }
 ```
+
+OpenCode 1 uses the same tuple form.
 
 ## Pull Request Checklist
 

@@ -8,7 +8,10 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
@@ -19,3 +22,17 @@ jobs:
         uses: codecov/codecov-action@v7
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
+
+  devcontainer:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build Dev Container
+        run: docker build --tag kilo-code-opencode-provider-devcontainer .devcontainer
+      - name: Verify baked OpenCode CLIs
+        run: docker run --rm --volume "$PWD:/workspace" --workdir /workspace --env KILO_CODE_API_KEY kilo-code-opencode-provider-devcontainer /workspace/.devcontainer/test.sh
+        env:
+          KILO_CODE_API_KEY: ${{ secrets.KILO_CODE_API_KEY }}
