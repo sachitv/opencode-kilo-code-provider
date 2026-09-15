@@ -1,0 +1,7 @@
+{
+  "name": "kilo-code-opencode-provider",
+  "build": { "dockerfile": "Dockerfile" },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+  "workspaceFolder": "/workspace",
+  "remoteUser": "root"
+}

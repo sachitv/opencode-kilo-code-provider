@@ -20,19 +20,27 @@ The organization id is a UUID (e.g. `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`) foun
 bun add @sachitv/opencode-kilo-code-provider
 ```
 
-Then add it to your OpenCode config:
+Then add it to your OpenCode 2 config:
 
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    [
-      "@sachitv/opencode-kilo-code-provider",
-      {
-        "organizationId": "your_org_id",
-        "defaultModel": "kilo-auto/free"
-      }
-    ]
+    ["@sachitv/opencode-kilo-code-provider", {
+      "organizationId": "your_org_id",
+      "defaultModel": "kilo-auto/free"
+    }]
+  ]
+}
+```
+
+OpenCode 1 uses the same `plugin` tuple form:
+
+```jsonc
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    ["@sachitv/opencode-kilo-code-provider", { "organizationId": "your_org_id", "defaultModel": "kilo-auto/free" }]
   ]
 }
 ```
@@ -52,16 +60,15 @@ Then reference the built output via `file://`:
 {
   "$schema": "https://opencode.ai/config.json",
   "plugin": [
-    [
-      "file:///absolute/path/to/opencode-kilo-code-provider/dist/index.js",
-      {
-        "organizationId": "your_org_id",
-        "defaultModel": "kilo-auto/free"
-      }
-    ]
+    ["file:///absolute/path/to/opencode-kilo-code-provider/dist", {
+      "organizationId": "your_org_id",
+      "defaultModel": "kilo-auto/free"
+    }]
   ]
 }
 ```
+
+For OpenCode 1 local development, use `file:///absolute/path/to/opencode-kilo-code-provider/dist/index.js` instead.
 
 ## Add the API Key
 
@@ -71,7 +78,12 @@ Run OpenCode and connect the custom provider id:
 /connect
 ```
 
-Choose `kilo-code` and paste your Kilo Gateway API key. OpenCode stores it in `~/.local/share/opencode/auth.json`. Do not put the key in `opencode.json`.
+Choose `kilo-code` and paste your Kilo Gateway API key. OpenCode stores it in its credential store. In OpenCode 1 this is
+`~/.local/share/opencode/auth.json`; OpenCode 2 manages the connection through its integration API. Do not put the key
+in `opencode.json`.
+
+For organization-scoped catalogs, restart OpenCode once after `/connect` to refresh the complete authenticated model list.
+The configured `defaultModel` remains usable immediately after connecting.
 
 ## Use Models
 
@@ -91,19 +103,22 @@ Models returned by Kilo's `/models` endpoint appear under `Kilo Code Gateway`. U
 
 ## How It Works
 
+The package supports both OpenCode 1 and OpenCode 2 from the same entrypoint. OpenCode 1 calls the legacy `server`
+export; OpenCode 2 calls the default export's `setup` function.
+
 The package has two parts:
 
 - **`dist/provider.js`** exports `createKiloCode`, an AI SDK provider factory wrapping Kilo's OpenAI-compatible gateway at `https://api.kilo.ai/api/gateway`.
-- **`dist/index.js`** exports the OpenCode plugin. It registers auth for `kilo-code`, fetches models from `GET /models`, and points each discovered model at `createKiloCode`.
+- **`dist/index.js`** exports both plugin APIs. It registers auth, fetches models from `GET /models`, and points each discovered model at `createKiloCode`.
 
-The provider reads the API key from OpenCode's auth store at request time. No keys are stored in config files.
+The provider reads credentials from OpenCode at request time. No keys are stored in config files.
 
 ## Configuration Options
 
 | Option | Required | Description |
 |--------|----------|-------------|
 | `organizationId` | No | Kilo organization id sent as `X-KiloCode-OrganizationId`. Required for org-scoped requests. |
-| `defaultModel` | No | Sets `config.model` if no model is already configured. |
+| `defaultModel` | No | Sets the model if none is already configured. Defaults to `kilo-auto/free`. |
 | `providerID` | No | Override the provider id (default: `kilo-code`). |
 | `baseURL` | No | Override the Kilo gateway base URL (default: `https://api.kilo.ai/api/gateway`). |
 

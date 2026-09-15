@@ -32,7 +32,7 @@ type OpenRouterModel = {
 };
 
 type DiscoveryOptions = {
-  apiKey?: string;
+  apiKey?: string | undefined;
   organizationId?: string;
   providerID?: string;
   providerNpm?: string;
@@ -149,7 +149,7 @@ function modelsFromResponse(items: OpenRouterModel[] | undefined, npm: string): 
 
 export async function discoverKiloCodeModels(options: DiscoveryOptions = {}): Promise<Record<string, KiloModel>> {
   const npm = options.providerNpm ?? new URL("./provider.js", import.meta.url).href;
-  const apiKey = options.apiKey ?? readOpenCodeApiKey(options.providerID ?? KILO_CODE_PROVIDER_ID);
+  const apiKey = "apiKey" in options ? options.apiKey : readOpenCodeApiKey(options.providerID ?? KILO_CODE_PROVIDER_ID);
 
   const url = `${discoveryURL(options.organizationId).replace(/\/$/, "")}/models`;
   const response = await (options.fetch ?? fetch)(url, { headers: discoveryHeaders(options, apiKey) });

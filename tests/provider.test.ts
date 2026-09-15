@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Config } from "@opencode-ai/plugin";
 import { authFilePath, readOpenCodeApiKey } from "../src/auth";
-import { KiloCodeOpenCodeProvider } from "../src/index";
+import plugin, { KiloCodeOpenCodeProvider } from "../src/index";
 import { toKiloModel, discoverKiloCodeModels } from "../src/models";
 import { KILO_CODE_ORGANIZATION_HEADER, KILO_CODE_PROVIDER_ID } from "../src/provider";
 
@@ -261,6 +261,224 @@ describe("KiloCodeOpenCodeProvider", () => {
     expect(config.model).toBe("custom-kilo/kilo-auto/free");
     expect(config.provider?.["custom-kilo"]?.models?.["kilo-auto/free"]?.id).toBe("kilo-auto/free");
     expect(config.provider?.[KILO_CODE_PROVIDER_ID]).toBeUndefined();
+  });
+
+  test("uses the free Kilo model as the default", async () => {
+    globalThis.fetch = stubFetch(async () => Response.json({ data: [mockModel("kilo-auto/free")] }));
+
+    const hooks = await KiloCodeOpenCodeProvider({} as Parameters<typeof KiloCodeOpenCodeProvider>[0]);
+    const config: Config = {};
+    await hooks.config?.(config);
+
+    expect(config.model).toBe("kilo-code/kilo-auto/free");
+  });
+});
+
+describe("OpenCode 2 plugin", () => {
+  test("exports the V2 setup alongside the V1 server", () => {
+    expect(plugin.id).toBe("kilo-code");
+    expect(plugin.setup).toBeTypeOf("function");
+    expect(plugin.server).toBe(KiloCodeOpenCodeProvider);
+  });
+
+  test("registers V2 credentials, provider, and models", async () => {
+    globalThis.fetch = stubFetch(async () => Response.json({
+      data: [mockModel("openai/gpt-5.1", {
+        opencode: { variants: { fast: { temperature: 0.2 } } },
+      })],
+    }));
+
+    const methods: unknown[] = [];
+    let catalogTransform: ((catalog: any) => void) | undefined;
+    const ctx = {
+      options: { organizationId: "org_v2", defaultModel: "openai/gpt-5.1" },
+      integration: {
+        transform: async (callback: (editor: any) => void) => {
+          callback({
+            update: () => undefined,
+            method: { update: (input: unknown) => methods.push(input) },
+          });
+        },
+        connection: {
+          active: async () => undefined,
+          resolve: async () => undefined,
+        },
+      },
+      catalog: {
+        transform: async (callback: (catalog: any) => void) => {
+          catalogTransform = callback;
+        },
+      },
+    } as any;
+
+    await plugin.setup(ctx);
+
+    const provider: Record<string, unknown> = {};
+    const model: Record<string, unknown> = {};
+    let defaultModel: { providerID: string; modelID: string } | undefined;
+    catalogTransform?.({
+      provider: {
+        update: (_id: string, update: (provider: Record<string, unknown>) => void) => update(provider),
+      },
+      model: {
+        update: (_providerID: string, _modelID: string, update: (model: Record<string, unknown>) => void) => update(model),
+        default: {
+          get: () => defaultModel,
+          set: (providerID: string, modelID: string) => { defaultModel = { providerID, modelID }; },
+        },
+      },
+    });
+
+    expect(methods).toEqual([{
+      integrationID: "kilo-code",
+      method: { type: "key", label: "Kilo Gateway API key" },
+    }]);
+    expect(provider).toMatchObject({
+      name: "Kilo Code Gateway",
+      activation: "enabled",
+      package: expect.stringMatching(/^aisdk:.*provider\.js$/),
+      integrationID: "kilo-code",
+      settings: { baseURL: "https://api.kilo.ai/api/gateway" },
+      headers: { [KILO_CODE_ORGANIZATION_HEADER]: "org_v2" },
+    });
+    expect(model).toMatchObject({
+      name: "openai/gpt-5.1",
+      capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
+      variants: [{ id: "fast", settings: { temperature: 0.2 } }],
+    });
+    expect(defaultModel).toEqual({ providerID: "kilo-code", modelID: "openai/gpt-5.1" });
+  });
+
+  test("registers the free Kilo default when org discovery is unauthorized", async () => {
+    globalThis.fetch = stubFetch(async () => new Response("Unauthorized", { status: 401 }));
+
+    let catalogTransform: ((catalog: any) => void) | undefined;
+    const ctx = {
+      options: { organizationId: "org_v2" },
+      integration: {
+        transform: async (callback: (editor: any) => void) => {
+          callback({ update: () => undefined, method: { update: () => undefined } });
+        },
+        connection: { active: async () => undefined, resolve: async () => undefined },
+      },
+      catalog: {
+        transform: async (callback: (catalog: any) => void) => { catalogTransform = callback; },
+      },
+    } as any;
+
+    await plugin.setup(ctx);
+
+    const model: Record<string, unknown> = {};
+    let defaultModel: { providerID: string; modelID: string } | undefined;
+    catalogTransform?.({
+      provider: { update: () => undefined },
+      model: {
+        update: (_providerID: string, _modelID: string, update: (model: Record<string, unknown>) => void) => update(model),
+        default: {
+          get: () => defaultModel,
+          set: (providerID: string, modelID: string) => { defaultModel = { providerID, modelID }; },
+        },
+      },
+    });
+
+    expect(model).toMatchObject({ name: "kilo-auto/free", enabled: true });
+    expect(defaultModel).toEqual({ providerID: "kilo-code", modelID: "kilo-auto/free" });
+  });
+
+  test("preserves an explicit V2 catalog default", async () => {
+    globalThis.fetch = stubFetch(async () => Response.json({ data: [mockModel("kilo-auto/free")] }));
+
+    let catalogTransform: ((catalog: any) => void) | undefined;
+    const ctx = {
+      options: { defaultModel: "kilo-auto/free" },
+      integration: {
+        transform: async (callback: (editor: any) => void) => {
+          callback({ update: () => undefined, method: { update: () => undefined } });
+        },
+        connection: { active: async () => undefined, resolve: async () => undefined },
+      },
+      catalog: {
+        transform: async (callback: (catalog: any) => void) => { catalogTransform = callback; },
+      },
+    } as any;
+
+    await plugin.setup(ctx);
+
+    let defaultModel = { providerID: "openai", modelID: "gpt-5.6-sol" };
+    catalogTransform?.({
+      provider: { update: () => undefined },
+      model: {
+        update: () => undefined,
+        default: {
+          get: () => defaultModel,
+          set: (providerID: string, modelID: string) => { defaultModel = { providerID, modelID }; },
+        },
+      },
+    });
+
+    expect(defaultModel).toEqual({ providerID: "openai", modelID: "gpt-5.6-sol" });
+  });
+
+  describe("V2 credential resolution", () => {
+    type Connection = { active: () => Promise<unknown>; resolve: () => Promise<unknown> };
+
+    async function discoveryAuthWithLegacyKey(connection: Connection) {
+      const dir = mkdtempSync(join(tmpdir(), "kilo-auth-"));
+      process.env.XDG_DATA_HOME = dir;
+      mkdirSync(join(dir, "opencode"));
+      writeFileSync(
+        join(dir, "opencode", "auth.json"),
+        JSON.stringify({ [KILO_CODE_PROVIDER_ID]: { type: "api", key: "legacy-key" } }),
+      );
+
+      const seen: Array<string | null> = [];
+      globalThis.fetch = stubFetch(async (_url, init) => {
+        seen.push(new Headers(init?.headers).get("authorization"));
+        return Response.json({ data: [mockModel("kilo-auto/free")] });
+      });
+
+      const ctx = {
+        options: {},
+        integration: {
+          transform: async (callback: (editor: any) => void) => {
+            callback({ update: () => undefined, method: { update: () => undefined } });
+          },
+          connection,
+        },
+        catalog: { transform: async () => undefined },
+      } as any;
+
+      try {
+        await plugin.setup(ctx);
+        return seen;
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    test("uses the active V2 connection key over the legacy auth store", async () => {
+      const seen = await discoveryAuthWithLegacyKey({
+        active: async () => ({ id: "conn" }),
+        resolve: async () => ({ type: "key", key: "v2-key" }),
+      });
+      expect(seen).toEqual(["Bearer v2-key"]);
+    });
+
+    test("falls back to the legacy auth store when no V2 connection exists", async () => {
+      const seen = await discoveryAuthWithLegacyKey({
+        active: async () => undefined,
+        resolve: async () => undefined,
+      });
+      expect(seen).toEqual(["Bearer legacy-key"]);
+    });
+
+    test("does not revive the legacy key when the V2 connection fails to resolve", async () => {
+      const seen = await discoveryAuthWithLegacyKey({
+        active: async () => ({ id: "conn" }),
+        resolve: async () => { throw new Error("credential store unavailable"); },
+      });
+      expect(seen).toEqual([null]);
+    });
   });
 });
 
