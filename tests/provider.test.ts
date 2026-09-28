@@ -289,7 +289,8 @@ describe("OpenCode 2 plugin", () => {
     }));
 
     const methods: unknown[] = [];
-    let catalogTransform: ((catalog: any) => void) | undefined;
+    let providerTransform: ((provider: any) => void) | undefined;
+    let modelTransform: ((model: any) => void) | undefined;
     const ctx = {
       options: { organizationId: "org_v2", defaultModel: "openai/gpt-5.1" },
       integration: {
@@ -304,36 +305,25 @@ describe("OpenCode 2 plugin", () => {
           resolve: async () => undefined,
         },
       },
-      catalog: {
-        transform: async (callback: (catalog: any) => void) => {
-          catalogTransform = callback;
-        },
-      },
+      provider: { transform: async (callback: (provider: any) => void) => { providerTransform = callback; } },
+      model: { transform: async (callback: (model: any) => void) => { modelTransform = callback; } },
     } as any;
 
     await plugin.setup(ctx);
 
-    const provider: Record<string, unknown> = {};
-    const model: Record<string, unknown> = {};
+    const registered: { info?: Record<string, unknown>; models?: Array<Record<string, any>> } = {};
     let defaultModel: { providerID: string; modelID: string } | undefined;
-    catalogTransform?.({
-      provider: {
-        update: (_id: string, update: (provider: Record<string, unknown>) => void) => update(provider),
-      },
-      model: {
-        update: (_providerID: string, _modelID: string, update: (model: Record<string, unknown>) => void) => update(model),
-        default: {
-          get: () => defaultModel,
-          set: (providerID: string, modelID: string) => { defaultModel = { providerID, modelID }; },
-        },
-      },
-    });
+    providerTransform?.({ add: (input: typeof registered) => Object.assign(registered, input) });
+    modelTransform?.({ default: {
+      get: () => defaultModel,
+      set: (providerID: string, modelID: string) => { defaultModel = { providerID, modelID }; },
+    } });
 
     expect(methods).toEqual([{
       integrationID: "kilo-code",
       method: { type: "key", label: "Kilo Gateway API key" },
     }]);
-    expect(provider).toMatchObject({
+    expect(registered.info).toMatchObject({
       name: "Kilo Code Gateway",
       activation: "enabled",
       package: expect.stringMatching(/^aisdk:.*provider\.js$/),
@@ -341,7 +331,7 @@ describe("OpenCode 2 plugin", () => {
       settings: { baseURL: "https://api.kilo.ai/api/gateway" },
       headers: { [KILO_CODE_ORGANIZATION_HEADER]: "org_v2" },
     });
-    expect(model).toMatchObject({
+    expect(registered.models?.[0]).toMatchObject({
       name: "openai/gpt-5.1",
       capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
       variants: [{ id: "fast", settings: { temperature: 0.2 } }],
@@ -352,7 +342,8 @@ describe("OpenCode 2 plugin", () => {
   test("registers the free Kilo default when org discovery is unauthorized", async () => {
     globalThis.fetch = stubFetch(async () => new Response("Unauthorized", { status: 401 }));
 
-    let catalogTransform: ((catalog: any) => void) | undefined;
+    let providerTransform: ((provider: any) => void) | undefined;
+    let modelTransform: ((model: any) => void) | undefined;
     const ctx = {
       options: { organizationId: "org_v2" },
       integration: {
@@ -361,34 +352,28 @@ describe("OpenCode 2 plugin", () => {
         },
         connection: { active: async () => undefined, resolve: async () => undefined },
       },
-      catalog: {
-        transform: async (callback: (catalog: any) => void) => { catalogTransform = callback; },
-      },
+      provider: { transform: async (callback: (provider: any) => void) => { providerTransform = callback; } },
+      model: { transform: async (callback: (model: any) => void) => { modelTransform = callback; } },
     } as any;
 
     await plugin.setup(ctx);
 
-    const model: Record<string, unknown> = {};
+    let registeredModels: Array<Record<string, unknown>> = [];
     let defaultModel: { providerID: string; modelID: string } | undefined;
-    catalogTransform?.({
-      provider: { update: () => undefined },
-      model: {
-        update: (_providerID: string, _modelID: string, update: (model: Record<string, unknown>) => void) => update(model),
-        default: {
-          get: () => defaultModel,
-          set: (providerID: string, modelID: string) => { defaultModel = { providerID, modelID }; },
-        },
-      },
-    });
+    providerTransform?.({ add: (input: { models: Array<Record<string, unknown>> }) => { registeredModels = input.models; } });
+    modelTransform?.({ default: {
+      get: () => defaultModel,
+      set: (providerID: string, modelID: string) => { defaultModel = { providerID, modelID }; },
+    } });
 
-    expect(model).toMatchObject({ name: "kilo-auto/free", enabled: true });
+    expect(registeredModels[0]).toMatchObject({ name: "kilo-auto/free", enabled: true });
     expect(defaultModel).toEqual({ providerID: "kilo-code", modelID: "kilo-auto/free" });
   });
 
   test("preserves an explicit V2 catalog default", async () => {
     globalThis.fetch = stubFetch(async () => Response.json({ data: [mockModel("kilo-auto/free")] }));
 
-    let catalogTransform: ((catalog: any) => void) | undefined;
+    let modelTransform: ((model: any) => void) | undefined;
     const ctx = {
       options: { defaultModel: "kilo-auto/free" },
       integration: {
@@ -397,24 +382,17 @@ describe("OpenCode 2 plugin", () => {
         },
         connection: { active: async () => undefined, resolve: async () => undefined },
       },
-      catalog: {
-        transform: async (callback: (catalog: any) => void) => { catalogTransform = callback; },
-      },
+      provider: { transform: async () => undefined },
+      model: { transform: async (callback: (model: any) => void) => { modelTransform = callback; } },
     } as any;
 
     await plugin.setup(ctx);
 
     let defaultModel = { providerID: "openai", modelID: "gpt-5.6-sol" };
-    catalogTransform?.({
-      provider: { update: () => undefined },
-      model: {
-        update: () => undefined,
-        default: {
-          get: () => defaultModel,
-          set: (providerID: string, modelID: string) => { defaultModel = { providerID, modelID }; },
-        },
-      },
-    });
+    modelTransform?.({ default: {
+      get: () => defaultModel,
+      set: (providerID: string, modelID: string) => { defaultModel = { providerID, modelID }; },
+    } });
 
     expect(defaultModel).toEqual({ providerID: "openai", modelID: "gpt-5.6-sol" });
   });
@@ -445,7 +423,8 @@ describe("OpenCode 2 plugin", () => {
           },
           connection,
         },
-        catalog: { transform: async () => undefined },
+        provider: { transform: async () => undefined },
+        model: { transform: async () => undefined },
       } as any;
 
       try {

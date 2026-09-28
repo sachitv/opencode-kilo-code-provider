@@ -25,16 +25,19 @@ Then add it to your OpenCode 2 config:
 ```jsonc
 {
   "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["@sachitv/opencode-kilo-code-provider", {
-      "organizationId": "your_org_id",
-      "defaultModel": "kilo-auto/free"
-    }]
+  "plugins": [
+    {
+      "package": "@sachitv/opencode-kilo-code-provider",
+      "options": {
+        "organizationId": "your_org_id",
+        "defaultModel": "kilo-auto/free"
+      }
+    }
   ]
 }
 ```
 
-OpenCode 1 uses the same `plugin` tuple form:
+OpenCode 1 uses the singular `plugin` key and tuple form:
 
 ```jsonc
 {
@@ -54,21 +57,14 @@ bun install
 bun run build
 ```
 
-Then reference the built output via `file://`:
+For OpenCode 2 local development, expose the package through the discovered plugin directory. From the project where OpenCode runs, link the provider package root after building it:
 
-```jsonc
-{
-  "$schema": "https://opencode.ai/config.json",
-  "plugin": [
-    ["file:///absolute/path/to/opencode-kilo-code-provider/dist", {
-      "organizationId": "your_org_id",
-      "defaultModel": "kilo-auto/free"
-    }]
-  ]
-}
+```bash
+mkdir -p .opencode/plugins
+ln -s /absolute/path/to/opencode-kilo-code-provider .opencode/plugins/kilo-code
 ```
 
-For OpenCode 1 local development, use `file:///absolute/path/to/opencode-kilo-code-provider/dist/index.js` instead.
+OpenCode 1 local development uses the `plugin` key with `file:///absolute/path/to/opencode-kilo-code-provider/dist/index.js`.
 
 ## Add the API Key
 

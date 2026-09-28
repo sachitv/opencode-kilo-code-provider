@@ -10,6 +10,7 @@ test_version() {
   local config="$2"
   local config_home="/tmp/opencode-${version}/config"
   local data_home="/tmp/opencode-${version}/data"
+  local working_directory="/workspace"
 
   rm -rf "/tmp/opencode-${version}"
   mkdir -p "$config_home/opencode" "$data_home"
@@ -23,7 +24,6 @@ test_version() {
 
   if [[ "$version" == 2.* ]]; then
     local opencode_command="/opt/opencode-v2/node_modules/.bin/opencode2"
-    local models_args=(models --standalone)
   else
     local opencode_command="$HOME/.opencode/bin/opencode"
     local models_args=(models kilo-code)
@@ -31,13 +31,21 @@ test_version() {
 
   if [[ "$version" == 2.* ]]; then
     cp "$config" "$config_home/opencode/opencode.json"
+    working_directory="/tmp/opencode-${version}/project"
+    local plugin_dir="$working_directory/.opencode/plugins/kilo-code"
+    mkdir -p "$(dirname "$plugin_dir")"
+    git -C "$working_directory" init --quiet
+    ln -s /workspace "$plugin_dir"
+    git -C "$working_directory" add .
+    git -C "$working_directory" -c user.name="OpenCode Smoke" -c user.email="smoke@example.invalid" commit --quiet --allow-empty -m "Smoke test"
+    git -C "$working_directory" remote add origin https://example.invalid/kilo-code-smoke.git
   else
     cp "$config" "$config_home/opencode/opencode.jsonc"
   fi
 
   echo "Testing OpenCode ${version}"
   "$opencode_command" --version
-  if [[ "$version" != 2.* && -n "${KILO_CODE_API_KEY:-}" ]]; then
+  if [[ "$version" != 2.* ]]; then
     models_output=$(
       XDG_CONFIG_HOME="$config_home" \
       XDG_DATA_HOME="$data_home" \
@@ -52,42 +60,35 @@ test_version() {
   fi
 
   if [[ "$version" == 2.* ]]; then
-    config_output=$( \
+    completion_output=$( \
+      cd "$working_directory" && \
       XDG_CONFIG_HOME="$config_home" \
       XDG_DATA_HOME="$data_home" \
-      "$opencode_command" debug config 2>&1
+      timeout 60s "$opencode_command" run --standalone "Reply with exactly OK." 2>&1
     )
-    if [[ "$config_output" != *"file:///workspace/dist"* ]]; then
-      printf '%s\n' "$config_output"
-      echo "Kilo Code plugin configuration was not loaded by OpenCode ${version}" >&2
-      return 1
-    fi
-    echo "Kilo Code plugin configuration loaded."
-  fi
-
-  if [[ -n "${KILO_CODE_API_KEY:-}" ]]; then
-    if [[ "$version" == 2.* ]]; then
-      completion_output=$(
-        XDG_CONFIG_HOME="$config_home" \
-        XDG_DATA_HOME="$data_home" \
-        timeout 60s "$opencode_command" run --standalone --model "kilo-code/kilo-auto/free" "Reply with exactly OK." 2>&1
-      )
-    else
-      completion_output=$(
-        XDG_CONFIG_HOME="$config_home" \
-        XDG_DATA_HOME="$data_home" \
-        timeout 60s "$opencode_command" run "Reply with exactly OK." 2>&1
-      )
-    fi
     printf '%s\n' "$completion_output"
     if [[ "$completion_output" != *"OK"* ]]; then
       echo "Kilo Code completion failed in OpenCode ${version}" >&2
       return 1
     fi
-  else
+    echo "Kilo Code model loaded and completed."
+  fi
+
+  if [[ -n "${KILO_CODE_API_KEY:-}" && "$version" != 2.* ]]; then
+    completion_output=$(
+      XDG_CONFIG_HOME="$config_home" \
+      XDG_DATA_HOME="$data_home" \
+      timeout 60s "$opencode_command" run "Reply with exactly OK." 2>&1
+    )
+    printf '%s\n' "$completion_output"
+    if [[ "$completion_output" != *"OK"* ]]; then
+      echo "Kilo Code completion failed in OpenCode ${version}" >&2
+      return 1
+    fi
+  elif [[ "$version" != 2.* ]]; then
     echo "Skipping live completion; set KILO_CODE_API_KEY to run it."
   fi
 }
 
 test_version "1.18.31" "/workspace/.devcontainer/opencode-v1.jsonc"
-test_version "2.0.3" "/workspace/.devcontainer/opencode-v2.jsonc"
+test_version "2.0.18" "/workspace/.devcontainer/opencode-v2.jsonc"
