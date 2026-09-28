@@ -1,5 +1,6 @@
 import type { Config, Plugin } from "@opencode-ai/plugin";
-import type { Context as V2Context, Plugin as V2Plugin } from "@opencode/plugin/promise/plugin";
+import { Model, Plugin as V2Plugin, Provider } from "@opencode/plugin";
+import type { Context as V2Context } from "@opencode/plugin/promise/plugin";
 import { readOpenCodeApiKey } from "./auth";
 import { discoverKiloCodeModels, type KiloModel } from "./models";
 import {
@@ -96,8 +97,9 @@ function ensureDefaultModel(
   };
 }
 
-function modelToV2Fields(m: KiloModel): Record<string, unknown> {
-  return {
+function modelToV2Info(m: KiloModel, providerID: string) {
+  const model = Model.Info.default(Provider.ID.make(providerID), Model.ID.make(m.id));
+  Object.assign(model, {
     name: m.name,
     family: m.family,
     status: m.status,
@@ -114,7 +116,8 @@ function modelToV2Fields(m: KiloModel): Record<string, unknown> {
       output: m.output_modalities,
     },
     variants: Object.entries(m.variants ?? {}).map(([id, settings]) => ({ id, settings })),
-  };
+  });
+  return model;
 }
 
 function applyDefaultModel(config: Config, providerID: string, defaultModel: string | undefined): void {
@@ -200,37 +203,37 @@ async function setupV2(ctx: V2Context): Promise<void> {
   // configured default selectable even when an org-scoped catalog is 401.
   const models = ensureDefaultModel(discoveredModels, defaultModel, npm);
 
-  await ctx.catalog.transform((catalog) => {
-    catalog.provider.update(providerID, (provider) => {
-      provider.name = "Kilo Code Gateway";
-      provider.activation = "enabled";
-      provider.package = `aisdk:${providerEntry()}`;
-      provider.integrationID = providerID as unknown as typeof provider.integrationID;
-      provider.settings = { ...provider.settings, baseURL };
-      provider.headers = {
-        ...provider.headers,
+  await ctx.provider.transform((editor) => {
+    const emptyProvider = Provider.Info.empty(Provider.ID.make(providerID));
+    const info = {
+      ...emptyProvider,
+      name: "Kilo Code Gateway",
+      activation: "enabled" as const,
+      package: `aisdk:${providerEntry()}`,
+      integrationID: providerID as unknown as typeof emptyProvider.integrationID,
+      settings: { ...emptyProvider.settings, baseURL },
+      headers: {
+        ...emptyProvider.headers,
         ...(organizationId ? { [KILO_CODE_ORGANIZATION_HEADER]: organizationId } : {}),
-      };
+      },
+    };
+    editor.add({
+      info,
+      models: Object.values(models).map((model) => modelToV2Info(model, providerID)),
     });
+  });
 
-    for (const model of Object.values(models)) {
-      catalog.model.update(providerID, model.id, (entry) => {
-        Object.assign(entry, modelToV2Fields(model));
-      });
-    }
-
-    if (!catalog.model.default.get()) {
-      catalog.model.default.set(providerID, defaultModel);
-    }
+  await ctx.model.transform((editor) => {
+    if (!editor.default.get()) editor.default.set(providerID, defaultModel);
   });
 }
 
 export const server = KiloCodeOpenCodeProvider;
 
-const v2Plugin: V2Plugin = {
+const v2Plugin: V2Plugin.Plugin = {
   id: "kilo-code",
   setup: setupV2,
 };
 
 // V1 calls server(); V2 reads id/setup and ignores the legacy member.
-export default { ...v2Plugin, server: KiloCodeOpenCodeProvider };
+export default { ...V2Plugin.define(v2Plugin), server: KiloCodeOpenCodeProvider };
