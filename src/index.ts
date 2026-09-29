@@ -161,17 +161,37 @@ export const KiloCodeOpenCodeProvider: Plugin = async (_ctx, rawOptions = {}) =>
   };
 };
 
-async function v2ApiKey(ctx: V2Context, providerID: string): Promise<string | undefined> {
-  const credential = await ctx.integration.connection
-    .active(providerID)
-    .then((connection) => (connection ? ctx.integration.connection.resolve(connection) : null))
-    .catch(() => undefined);
+type V2Connection = NonNullable<Awaited<ReturnType<V2Context["integration"]["connection"]["active"]>>>;
 
-  // null means V2 confirmed no connection; a failed or empty resolve must not revive a stale legacy key.
-  if (credential === null) return readOpenCodeApiKey(providerID);
-  if (credential?.type === "key") return credential.key;
-  if (credential?.type === "oauth") return credential.access;
-  return undefined;
+async function v2Auth(
+  ctx: V2Context,
+  providerID: string,
+): Promise<{ apiKey?: string; sourceConnection?: V2Connection }> {
+  let sourceConnection: V2Connection | undefined;
+  try {
+    sourceConnection = await ctx.integration.connection.active(providerID);
+  } catch {
+    return {};
+  }
+
+  if (!sourceConnection) {
+    const apiKey = readOpenCodeApiKey(providerID);
+    return apiKey ? { apiKey } : {};
+  }
+
+  try {
+    const credential = await ctx.integration.connection.resolve(sourceConnection);
+    const apiKey = credential?.type === "key"
+      ? credential.key
+      : credential?.type === "oauth"
+        ? credential.access
+        : undefined;
+    return { ...(apiKey ? { apiKey } : {}), sourceConnection };
+  } catch {
+    // A failed resolve must not revive a stale legacy key. Retain the connection
+    // association so OpenCode can replace this account-specific registration.
+    return { sourceConnection };
+  }
 }
 
 async function setupV2(ctx: V2Context): Promise<void> {
@@ -191,7 +211,7 @@ async function setupV2(ctx: V2Context): Promise<void> {
     });
   });
 
-  const apiKey = await v2ApiKey(ctx, providerID);
+  const { apiKey, sourceConnection } = await v2Auth(ctx, providerID);
   const npm = providerEntry();
   const discoveredModels = await discoverKiloCodeModels({
     ...(organizationId ? { organizationId } : {}),
@@ -220,6 +240,7 @@ async function setupV2(ctx: V2Context): Promise<void> {
     editor.add({
       info,
       models: Object.values(models).map((model) => modelToV2Info(model, providerID)),
+      ...(sourceConnection ? { sourceConnection } : {}),
     });
   });
 
