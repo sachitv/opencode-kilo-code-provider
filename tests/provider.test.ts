@@ -311,7 +311,11 @@ describe("OpenCode 2 plugin", () => {
 
     await plugin.setup(ctx);
 
-    const registered: { info?: Record<string, unknown>; models?: Array<Record<string, any>> } = {};
+    const registered: {
+      info?: Record<string, unknown>;
+      models?: Array<Record<string, any>>;
+      sourceConnection?: unknown;
+    } = {};
     let defaultModel: { providerID: string; modelID: string } | undefined;
     providerTransform?.({ add: (input: typeof registered) => Object.assign(registered, input) });
     modelTransform?.({ default: {
@@ -336,6 +340,7 @@ describe("OpenCode 2 plugin", () => {
       capabilities: { tools: true, input: ["text", "image"], output: ["text"] },
       variants: [{ id: "fast", settings: { temperature: 0.2 } }],
     });
+    expect(registered.sourceConnection).toBeUndefined();
     expect(defaultModel).toEqual({ providerID: "kilo-code", modelID: "openai/gpt-5.1" });
   });
 
@@ -441,6 +446,35 @@ describe("OpenCode 2 plugin", () => {
         resolve: async () => ({ type: "key", key: "v2-key" }),
       });
       expect(seen).toEqual(["Bearer v2-key"]);
+    });
+
+    test("binds the provider inventory to the active V2 connection", async () => {
+      globalThis.fetch = stubFetch(async () => Response.json({ data: [mockModel("kilo-auto/free")] }));
+
+      const connection = { id: "conn" };
+      let registeredConnection: unknown;
+      const ctx = {
+        options: {},
+        integration: {
+          transform: async (callback: (editor: any) => void) => {
+            callback({ update: () => undefined, method: { update: () => undefined } });
+          },
+          connection: {
+            active: async () => connection,
+            resolve: async () => ({ type: "key", key: "v2-key" }),
+          },
+        },
+        provider: {
+          transform: async (callback: (provider: any) => void) => {
+            callback({ add: (input: { sourceConnection?: unknown }) => { registeredConnection = input.sourceConnection; } });
+          },
+        },
+        model: { transform: async () => undefined },
+      } as any;
+
+      await plugin.setup(ctx);
+
+      expect(registeredConnection).toBe(connection);
     });
 
     test("falls back to the legacy auth store when no V2 connection exists", async () => {
