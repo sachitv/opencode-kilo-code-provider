@@ -2,7 +2,7 @@
 
 An OpenCode provider plugin for the [Kilo Code Gateway](https://kilo.ai/docs/gateway).
 
-This package is a **separate** OpenCode provider (not the built-in `kilo` provider). It dynamically fetches the model list from Kilo's OpenAI-compatible `/models` endpoint at startup, so you never have to hand-maintain model entries in your config.
+This package is a **separate** OpenCode provider (not the built-in `kilo` provider). It dynamically fetches the model list from Kilo's OpenAI-compatible `/models` endpoint at startup and refreshes it when the active account changes in OpenCode 2, so you never have to hand-maintain model entries in your config.
 
 The API key stays in OpenCode's credential store. The organization id is non-secret config sent as:
 
@@ -78,7 +78,8 @@ Choose `kilo-code` and paste your Kilo Gateway API key. OpenCode stores it in it
 `~/.local/share/opencode/auth.json`; OpenCode 2 manages the connection through its integration API. Do not put the key
 in `opencode.json`.
 
-For organization-scoped catalogs, restart OpenCode once after `/connect` to refresh the complete authenticated model list.
+OpenCode 2 refreshes the authenticated model list automatically after `/connect` or switching accounts.
+In OpenCode 1, restart once after `/connect` to refresh organization-scoped catalogs.
 The configured `defaultModel` remains usable immediately after connecting.
 
 ## Use Models

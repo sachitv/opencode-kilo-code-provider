@@ -194,7 +194,7 @@ async function v2Auth(
   }
 }
 
-async function setupV2(ctx: V2Context): Promise<void> {
+async function setupV2(ctx: V2Context): Promise<() => void> {
   const options = ctx.options as PluginOptions;
   const providerID = options.providerID ?? KILO_CODE_PROVIDER_ID;
   const organizationId = options.organizationId;
@@ -211,42 +211,151 @@ async function setupV2(ctx: V2Context): Promise<void> {
     });
   });
 
-  const { apiKey, sourceConnection } = await v2Auth(ctx, providerID);
   const npm = providerEntry();
-  const discoveredModels = await discoverKiloCodeModels({
-    ...(organizationId ? { organizationId } : {}),
-    apiKey,
-    providerID,
-    providerNpm: npm,
+  const controller = new AbortController();
+  type Auth = Awaited<ReturnType<typeof v2Auth>>;
+  const sameAuth = (a: Auth | undefined, b: Auth) => a !== undefined &&
+    a.apiKey === b.apiKey && JSON.stringify(a.sourceConnection) === JSON.stringify(b.sourceConnection);
+  const toInventory = (auth: Auth, models: Record<string, KiloModel>) => ({
+    models: Object.values(ensureDefaultModel(models, defaultModel, npm))
+      .map((model) => modelToV2Info(model, providerID)),
+    ...(auth.sourceConnection ? { sourceConnection: auth.sourceConnection } : {}),
   });
-  // V2 setup runs before a user can add a key through /connect. Keep the
-  // configured default selectable even when an org-scoped catalog is 401.
-  const models = ensureDefaultModel(discoveredModels, defaultModel, npm);
-
-  await ctx.provider.transform((editor) => {
-    const emptyProvider = Provider.Info.empty(Provider.ID.make(providerID));
-    const info = {
-      ...emptyProvider,
-      name: "Kilo Code Gateway",
-      activation: "enabled" as const,
-      package: `aisdk:${providerEntry()}`,
-      integrationID: providerID as unknown as typeof emptyProvider.integrationID,
-      settings: { ...emptyProvider.settings, baseURL },
-      headers: {
-        ...emptyProvider.headers,
-        ...(organizationId ? { [KILO_CODE_ORGANIZATION_HEADER]: organizationId } : {}),
+  const loadInventory = async (auth: Auth, signal: AbortSignal) => {
+    const discoveredModels = await discoverKiloCodeModels({
+      ...(organizationId ? { organizationId } : {}),
+      apiKey: auth.apiKey,
+      providerID,
+      providerNpm: npm,
+      fetch: async (input, init) => {
+        const response = await fetch(input, {
+          ...init,
+          signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+        });
+        if (!response.ok) throw new Error("Kilo model discovery failed");
+        return response;
       },
-    };
-    editor.add({
-      info,
-      models: Object.values(models).map((model) => modelToV2Info(model, providerID)),
-      ...(sourceConnection ? { sourceConnection } : {}),
     });
-  });
+    return toInventory(auth, discoveredModels);
+  };
 
-  await ctx.model.transform((editor) => {
-    if (!editor.default.get()) editor.default.set(providerID, defaultModel);
-  });
+  let inventory: Awaited<ReturnType<typeof loadInventory>>;
+  let completedAuth: Auth | undefined;
+  let pendingAuth: Auth | undefined;
+  let request: AbortController | undefined;
+  let generation = 0;
+  let authCheck = 0;
+  let retry: ReturnType<typeof setTimeout> | undefined;
+  let retryDelay = 1_000;
+  let ready!: () => void;
+  const initialized = new Promise<void>((resolve) => { ready = resolve; });
+  const clearRetry = () => { clearTimeout(retry); retry = undefined; };
+  const scheduleRetry = () => {
+    clearRetry();
+    if (controller.signal.aborted) return;
+    retry = setTimeout(() => { void refresh(true); }, retryDelay);
+    retry.unref();
+    retryDelay = Math.min(retryDelay * 2, 30_000);
+  };
+  const refresh = async (force = false) => {
+    const check = ++authCheck;
+    await initialized;
+    if (controller.signal.aborted) return;
+    const auth = await v2Auth(ctx, providerID);
+    if (controller.signal.aborted || check !== authCheck) return;
+    // Empty-payload updates may concern another integration. Compare both
+    // connection identity and the resolved key to retain credential rotation.
+    if (!force && sameAuth(pendingAuth ?? completedAuth, auth)) return;
+    request?.abort();
+    clearRetry();
+    const current = ++generation;
+    request = new AbortController();
+    const signal = AbortSignal.any([controller.signal, request.signal]);
+    pendingAuth = auth;
+    try {
+      const refreshed = await loadInventory(auth, signal);
+      if (signal.aborted || current !== generation) return;
+      inventory = refreshed;
+      await ctx.provider.reload();
+      if (signal.aborted || current !== generation) return;
+      completedAuth = auth;
+      retryDelay = 1_000;
+    } catch {
+      if (signal.aborted || current !== generation) return;
+      // Never retain an old account's catalog after a failed switch. Publish
+      // the configured default for this account while retrying its discovery.
+      completedAuth = undefined;
+      inventory = toInventory(auth, {});
+      try { await ctx.provider.reload(); } catch { /* Retry publication too. */ }
+      if (signal.aborted || current !== generation) return;
+      console.error("kilo-code: failed to refresh model inventory; retrying");
+      scheduleRetry();
+    } finally {
+      if (current === generation) pendingAuth = undefined;
+    }
+  };
+  const cleanup = () => {
+    controller.abort();
+    request?.abort();
+    clearRetry();
+    ready();
+  };
+  // Read events independently of discovery so a stalled request cannot block
+  // the next account switch. Generation checks discard superseded results.
+  void (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        if (event.type !== "credential.updated" && event.type !== "integration.updated" &&
+          event.type !== "server.connected" &&
+          !(event.type === "credential.switched" && event.data.integrationID === providerID)) continue;
+        void refresh();
+      }
+    } catch {
+      if (!controller.signal.aborted) console.error("kilo-code: model inventory event subscription failed");
+    }
+  })();
+
+  try {
+    const auth = await v2Auth(ctx, providerID);
+    let discoveryFailed = false;
+    try {
+      inventory = await loadInventory(auth, controller.signal);
+      completedAuth = auth;
+    } catch {
+      inventory = toInventory(auth, {});
+      discoveryFailed = true;
+    }
+
+    await ctx.provider.transform((editor) => {
+      const emptyProvider = Provider.Info.empty(Provider.ID.make(providerID));
+      const info = {
+        ...emptyProvider,
+        name: "Kilo Code Gateway",
+        activation: "enabled" as const,
+        package: `aisdk:${providerEntry()}`,
+        integrationID: providerID as unknown as typeof emptyProvider.integrationID,
+        settings: { ...emptyProvider.settings, baseURL },
+        headers: {
+          ...emptyProvider.headers,
+          ...(organizationId ? { [KILO_CODE_ORGANIZATION_HEADER]: organizationId } : {}),
+        },
+      };
+      editor.add({
+        info,
+        ...inventory,
+      });
+    });
+
+    await ctx.model.transform((editor) => {
+      if (!editor.default.get()) editor.default.set(providerID, defaultModel);
+    });
+    ready();
+    if (discoveryFailed && (auth.sourceConnection || auth.apiKey)) scheduleRetry();
+    return cleanup;
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
 export const server = KiloCodeOpenCodeProvider;

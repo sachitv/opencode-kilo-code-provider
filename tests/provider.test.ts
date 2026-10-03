@@ -10,12 +10,20 @@ import { KILO_CODE_ORGANIZATION_HEADER, KILO_CODE_PROVIDER_ID } from "../src/pro
 
 const originalFetch = globalThis.fetch;
 const originalXdgDataHome = process.env.XDG_DATA_HOME;
+const pluginCleanups: Array<() => void> = [];
+
+async function setupV2ForTest(ctx: Parameters<typeof plugin.setup>[0]) {
+  const cleanup = await plugin.setup(ctx);
+  if (cleanup) pluginCleanups.push(cleanup);
+  return cleanup;
+}
 
 function stubFetch(handler: Parameters<typeof fetch>[0] extends never ? never : (url: RequestInfo | URL, init?: RequestInit) => Promise<Response>): typeof fetch {
   return Object.assign(handler, { preconnect: originalFetch.preconnect });
 }
 
 afterEach(() => {
+  pluginCleanups.splice(0).forEach((cleanup) => cleanup());
   globalThis.fetch = originalFetch;
   if (originalXdgDataHome === undefined) {
     delete process.env.XDG_DATA_HOME;
@@ -23,6 +31,109 @@ afterEach(() => {
     process.env.XDG_DATA_HOME = originalXdgDataHome;
   }
 });
+
+async function waitFor(predicate: () => boolean, what: string) {
+  const deadline = Date.now() + 2_000;
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+function eventChannel() {
+  const queue: unknown[] = [];
+  const waiters: Array<(result: IteratorResult<unknown>) => void> = [];
+  return {
+    push(event: unknown) {
+      const waiter = waiters.shift();
+      if (waiter) waiter({ value: event, done: false });
+      else queue.push(event);
+    },
+    // True only once every pushed event has been consumed and the subscriber is
+    // blocked waiting for the next one, so refresh work has finished.
+    settled() {
+      return queue.length === 0 && waiters.length > 0;
+    },
+    subscribe(options?: { signal?: AbortSignal }) {
+      const signal = options?.signal;
+      return {
+        [Symbol.asyncIterator]: () => ({
+          next: (): Promise<IteratorResult<unknown>> => {
+            const value = queue.shift();
+            if (value !== undefined) return Promise.resolve({ value, done: false });
+            if (signal?.aborted) return Promise.resolve({ value: undefined, done: true });
+            return new Promise((resolve) => {
+              waiters.push(resolve);
+              signal?.addEventListener("abort", () => {
+                const index = waiters.indexOf(resolve);
+                if (index < 0) return;
+                waiters.splice(index, 1);
+                resolve({ value: undefined, done: true });
+              }, { once: true });
+            });
+          },
+        }),
+      };
+    },
+  };
+}
+
+type Registration = {
+  info?: Record<string, unknown>;
+  models?: Array<Record<string, any>>;
+  sourceConnection?: unknown;
+};
+
+function v2TestHarness(connection: {
+  active: () => unknown | Promise<unknown>;
+  resolve: () => unknown | Promise<unknown>;
+}) {
+  const events = eventChannel();
+  const registrations: Registration[] = [];
+  let providerTransform: ((editor: any) => void) | undefined;
+  let reloads = 0;
+  let activeCalls = 0;
+  const replay = () => {
+    const record: Registration = {};
+    providerTransform?.({ add: (input: Registration) => Object.assign(record, input) });
+    registrations.push(record);
+  };
+  const ctx = {
+    event: events,
+    options: {},
+    integration: {
+      transform: async (callback: (editor: any) => void) => {
+        callback({ update: () => undefined, method: { update: () => undefined } });
+      },
+      connection: {
+        active: async () => {
+          activeCalls += 1;
+          return connection.active();
+        },
+        resolve: () => connection.resolve(),
+      },
+    },
+    provider: {
+      transform: async (callback: (editor: any) => void) => {
+        providerTransform = callback;
+        replay();
+      },
+      reload: async () => {
+        reloads += 1;
+        replay();
+      },
+    },
+    model: { transform: async () => undefined },
+  } as any;
+
+  return {
+    ctx,
+    events,
+    registrations,
+    reloadCount: () => reloads,
+    activeCalls: () => activeCalls,
+  };
+}
 
 function mockModel(id: string, overrides: Record<string, unknown> = {}) {
   return {
@@ -292,6 +403,7 @@ describe("OpenCode 2 plugin", () => {
     let providerTransform: ((provider: any) => void) | undefined;
     let modelTransform: ((model: any) => void) | undefined;
     const ctx = {
+      event: { subscribe: async function* () {} },
       options: { organizationId: "org_v2", defaultModel: "openai/gpt-5.1" },
       integration: {
         transform: async (callback: (editor: any) => void) => {
@@ -309,7 +421,7 @@ describe("OpenCode 2 plugin", () => {
       model: { transform: async (callback: (model: any) => void) => { modelTransform = callback; } },
     } as any;
 
-    await plugin.setup(ctx);
+    await setupV2ForTest(ctx);
 
     const registered: {
       info?: Record<string, unknown>;
@@ -350,6 +462,7 @@ describe("OpenCode 2 plugin", () => {
     let providerTransform: ((provider: any) => void) | undefined;
     let modelTransform: ((model: any) => void) | undefined;
     const ctx = {
+      event: { subscribe: async function* () {} },
       options: { organizationId: "org_v2" },
       integration: {
         transform: async (callback: (editor: any) => void) => {
@@ -361,7 +474,7 @@ describe("OpenCode 2 plugin", () => {
       model: { transform: async (callback: (model: any) => void) => { modelTransform = callback; } },
     } as any;
 
-    await plugin.setup(ctx);
+    await setupV2ForTest(ctx);
 
     let registeredModels: Array<Record<string, unknown>> = [];
     let defaultModel: { providerID: string; modelID: string } | undefined;
@@ -380,6 +493,7 @@ describe("OpenCode 2 plugin", () => {
 
     let modelTransform: ((model: any) => void) | undefined;
     const ctx = {
+      event: { subscribe: async function* () {} },
       options: { defaultModel: "kilo-auto/free" },
       integration: {
         transform: async (callback: (editor: any) => void) => {
@@ -391,7 +505,7 @@ describe("OpenCode 2 plugin", () => {
       model: { transform: async (callback: (model: any) => void) => { modelTransform = callback; } },
     } as any;
 
-    await plugin.setup(ctx);
+    await setupV2ForTest(ctx);
 
     let defaultModel = { providerID: "openai", modelID: "gpt-5.6-sol" };
     modelTransform?.({ default: {
@@ -421,6 +535,7 @@ describe("OpenCode 2 plugin", () => {
       });
 
       const ctx = {
+        event: { subscribe: async function* () {} },
         options: {},
         integration: {
           transform: async (callback: (editor: any) => void) => {
@@ -433,7 +548,7 @@ describe("OpenCode 2 plugin", () => {
       } as any;
 
       try {
-        await plugin.setup(ctx);
+        await setupV2ForTest(ctx);
         return seen;
       } finally {
         rmSync(dir, { recursive: true, force: true });
@@ -454,6 +569,7 @@ describe("OpenCode 2 plugin", () => {
       const connection = { id: "conn" };
       let registeredConnection: unknown;
       const ctx = {
+        event: { subscribe: async function* () {} },
         options: {},
         integration: {
           transform: async (callback: (editor: any) => void) => {
@@ -472,7 +588,7 @@ describe("OpenCode 2 plugin", () => {
         model: { transform: async () => undefined },
       } as any;
 
-      await plugin.setup(ctx);
+      await setupV2ForTest(ctx);
 
       expect(registeredConnection).toBe(connection);
     });
@@ -491,6 +607,174 @@ describe("OpenCode 2 plugin", () => {
         resolve: async () => { throw new Error("credential store unavailable"); },
       });
       expect(seen).toEqual([null]);
+    });
+  });
+
+  describe("V2 connection refresh", () => {
+    test("rebinds the provider inventory when the active connection changes", async () => {
+      let connection: Record<string, unknown> | undefined = { id: "conn-a" };
+      let apiKey = "key-a";
+      const authHeaders: string[] = [];
+      globalThis.fetch = stubFetch(async (_url, init) => {
+        authHeaders.push(new Headers(init?.headers).get("authorization") ?? "");
+        return Response.json({ data: [mockModel(`model-for-${apiKey}`)] });
+      });
+
+      const harness = v2TestHarness({
+        active: async () => connection,
+        resolve: async () => ({ type: "key", key: apiKey }),
+      });
+
+      await setupV2ForTest(harness.ctx);
+      expect(harness.registrations.at(-1)?.sourceConnection).toEqual({ id: "conn-a" });
+
+      connection = { id: "conn-b" };
+      apiKey = "key-b";
+      harness.events.push({
+        type: "credential.switched",
+        data: { integrationID: KILO_CODE_PROVIDER_ID, credentialID: "conn-b" },
+      });
+
+      await waitFor(() => harness.reloadCount() === 1, "the connection switch to refresh the inventory");
+
+      const refreshed = harness.registrations.at(-1);
+      expect(harness.reloadCount()).toBe(1);
+      expect(refreshed?.sourceConnection).toEqual({ id: "conn-b" });
+      expect(refreshed?.models?.map((model) => model.name)).toContain("model-for-key-b");
+      expect(authHeaders).toEqual(["Bearer key-a", "Bearer key-b"]);
+    });
+
+    test("binds the inventory when a connection appears after startup", async () => {
+      let connection: Record<string, unknown> | undefined;
+      let apiKey: string | undefined;
+      globalThis.fetch = stubFetch(async () => Response.json({ data: [mockModel("kilo-auto/free")] }));
+
+      const harness = v2TestHarness({
+        active: async () => connection,
+        resolve: async () => (apiKey ? { type: "key", key: apiKey } : undefined),
+      });
+
+      await setupV2ForTest(harness.ctx);
+      expect(harness.registrations.at(-1)?.sourceConnection).toBeUndefined();
+
+      connection = { id: "conn-a" };
+      apiKey = "key-a";
+      harness.events.push({ type: "credential.updated", data: {} });
+
+      await waitFor(() => harness.reloadCount() === 1, "the new connection to refresh the inventory");
+
+      expect(harness.reloadCount()).toBe(1);
+      expect(harness.registrations.at(-1)?.sourceConnection).toEqual({ id: "conn-a" });
+    });
+
+    test("ignores connection switches for other integrations", async () => {
+      globalThis.fetch = stubFetch(async () => Response.json({ data: [mockModel("kilo-auto/free")] }));
+
+      const harness = v2TestHarness({
+        active: async () => ({ id: "conn-a" }),
+        resolve: async () => ({ type: "key", key: "key-a" }),
+      });
+
+      await setupV2ForTest(harness.ctx);
+      const activeCallsAfterSetup = harness.activeCalls();
+      const registrationsAfterSetup = harness.registrations.length;
+
+      harness.events.push({
+        type: "credential.switched",
+        data: { integrationID: "github", credentialID: "conn-x" },
+      });
+
+      await waitFor(() => harness.events.settled(), "the unrelated switch to be ignored");
+
+      expect(harness.activeCalls()).toBe(activeCallsAfterSetup);
+      expect(harness.registrations.length).toBe(registrationsAfterSetup);
+      expect(harness.reloadCount()).toBe(0);
+    });
+
+    test("does not re-register when credential updates leave the connection unchanged", async () => {
+      const authHeaders: string[] = [];
+      globalThis.fetch = stubFetch(async (_url, init) => {
+        authHeaders.push(new Headers(init?.headers).get("authorization") ?? "");
+        return Response.json({ data: [mockModel("kilo-auto/free")] });
+      });
+
+      const harness = v2TestHarness({
+        active: async () => ({ id: "conn-a" }),
+        resolve: async () => ({ type: "key", key: "key-a" }),
+      });
+
+      await setupV2ForTest(harness.ctx);
+      const activeCallsAfterSetup = harness.activeCalls();
+
+      harness.events.push({ type: "credential.updated", data: {} });
+
+      await waitFor(() => harness.activeCalls() === activeCallsAfterSetup + 1 && harness.events.settled(), "the credential update to be inspected");
+
+      // refresh() resolved the connection but skipped discovery and reload.
+      expect(harness.activeCalls()).toBe(activeCallsAfterSetup + 1);
+      expect(authHeaders).toEqual(["Bearer key-a"]);
+      expect(harness.reloadCount()).toBe(0);
+      expect(harness.registrations.length).toBe(1);
+    });
+
+    test("collapses an event burst into a single refresh", async () => {
+      let connection: Record<string, unknown> | undefined = { id: "conn-a" };
+      let apiKey = "key-a";
+      const authHeaders: string[] = [];
+      globalThis.fetch = stubFetch(async (_url, init) => {
+        authHeaders.push(new Headers(init?.headers).get("authorization") ?? "");
+        return Response.json({ data: [mockModel("kilo-auto/free")] });
+      });
+
+      const harness = v2TestHarness({
+        active: async () => connection,
+        resolve: async () => ({ type: "key", key: apiKey }),
+      });
+
+      await setupV2ForTest(harness.ctx);
+
+      connection = { id: "conn-b" };
+      apiKey = "key-b";
+      harness.events.push({ type: "credential.updated", data: {} });
+      harness.events.push({
+        type: "credential.switched",
+        data: { integrationID: KILO_CODE_PROVIDER_ID, credentialID: "conn-b" },
+      });
+
+      await waitFor(() => harness.reloadCount() === 1 && harness.events.settled(), "the event burst to be processed");
+
+      expect(harness.reloadCount()).toBe(1);
+      expect(harness.registrations.at(-1)?.sourceConnection).toEqual({ id: "conn-b" });
+      expect(authHeaders).toEqual(["Bearer key-a", "Bearer key-b"]);
+    });
+
+    test("stops refreshing after the plugin is unloaded", async () => {
+      let connection: Record<string, unknown> | undefined = { id: "conn-a" };
+      let apiKey = "key-a";
+      const authHeaders: string[] = [];
+      globalThis.fetch = stubFetch(async (_url, init) => {
+        authHeaders.push(new Headers(init?.headers).get("authorization") ?? "");
+        return Response.json({ data: [mockModel("kilo-auto/free")] });
+      });
+
+      const harness = v2TestHarness({
+        active: async () => connection,
+        resolve: async () => ({ type: "key", key: apiKey }),
+      });
+
+      const cleanup = await setupV2ForTest(harness.ctx);
+      await cleanup?.();
+
+      connection = { id: "conn-b" };
+      apiKey = "key-b";
+      harness.events.push({
+        type: "credential.switched",
+        data: { integrationID: KILO_CODE_PROVIDER_ID, credentialID: "conn-b" },
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(harness.reloadCount()).toBe(0);
+      expect(authHeaders).toEqual(["Bearer key-a"]);
     });
   });
 });
